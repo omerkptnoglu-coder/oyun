@@ -1,0 +1,145 @@
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+  background: #0b0205; color: #f1e6d0;
+  font-family: 'Pixelify Sans', monospace;
+  user-select: none; -webkit-user-select: none; touch-action: none;
+}
+#game {
+  position: fixed; left: 0; top: 0;
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  cursor: crosshair;
+}
+button { font-family: inherit; }
+
+/* ---------- Ekranlar ---------- */
+.screen {
+  position: fixed; inset: 0; display: none;
+  flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; z-index: 20;
+}
+.screen.show { display: flex; }
+.overlay { background: radial-gradient(ellipse at center, rgba(40,0,8,.75), rgba(5,0,2,.95)); }
+.overlay h2 { font-family: 'Pirata One', serif; font-size: clamp(42px, 9vw, 84px); margin: 0; color: #e8c66a;
+  text-shadow: 0 0 18px rgba(255,60,40,.6), 0 3px 0 #3a0a0a; letter-spacing: 2px; }
+.overlay p { font-size: clamp(14px, 2.5vw, 20px); color: #cfb79a; margin: 8px 0 20px; }
+
+#title { background: #0b0205; }
+#title .title-art {
+  position: absolute; inset: 0;
+  background: url('assets/title.jpg') center 30% / cover no-repeat;
+  image-rendering: pixelated; filter: saturate(1.05) brightness(.8);
+}
+#title .title-art::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(to bottom, rgba(10,0,4,.1) 0%, rgba(10,0,4,.15) 45%, rgba(10,0,4,.92) 78%, #0b0205 100%);
+}
+#title .title-inner { position: absolute; bottom: 5vh; left: 0; right: 0; padding: 0 16px; }
+#title h1 {
+  font-family: 'Pirata One', serif; font-weight: 400; margin: 0;
+  font-size: clamp(48px, 11vw, 110px); color: #f1cf6c; letter-spacing: 3px;
+  text-shadow: 0 0 24px rgba(255,80,40,.55), 0 4px 0 #4a0c0c, 0 8px 18px #000;
+}
+#title .sub { margin: 0 0 22px; font-size: clamp(15px, 2.6vw, 22px); color: #d9b9a0; letter-spacing: 4px; }
+
+.btn {
+  font-size: clamp(16px, 2.6vw, 22px); padding: 12px 34px; cursor: pointer;
+  color: #fbe7b0; background: linear-gradient(#6b1420, #3a070e);
+  border: 2px solid #d6a640; box-shadow: 0 0 0 2px #2a0508, 0 0 20px rgba(255,70,40,.35);
+  letter-spacing: 2px; transition: transform .1s, filter .1s;
+}
+.btn:hover { filter: brightness(1.25); transform: scale(1.04); }
+.btn:active { transform: scale(.97); }
+
+.controls-info { margin-top: 18px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 18px;
+  font-size: clamp(12px, 1.9vw, 15px); color: #c4a88c; }
+.controls-info b { color: #f1cf6c; font-weight: 600; }
+.touch-only { display: none; }
+body.touch .touch-only { display: flex; }
+body.touch .pc-only { display: none; }
+
+/* ---------- Sinematik ---------- */
+#cine-text {
+  position: fixed; left: 0; right: 0; top: 42%; text-align: center; z-index: 15;
+  font-size: clamp(20px, 4vw, 36px); color: #e9d6b8; letter-spacing: 3px;
+  opacity: 0; transition: opacity 1s; pointer-events: none; padding: 0 16px;
+  text-shadow: 0 0 12px rgba(255,60,40,.5);
+}
+#cine-text.show { opacity: 1; }
+#cine-text.red { color: #ff5a5a; }
+
+#title-card { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  z-index: 15; opacity: 0; transition: opacity 1.4s; pointer-events: none; }
+#title-card.show { opacity: 1; }
+#title-card h2 { font-family: 'Pirata One', serif; font-weight: 400; margin: 0; font-size: clamp(54px, 12vw, 120px);
+  color: #f1cf6c; text-shadow: 0 0 30px rgba(255,80,40,.7), 0 5px 0 #4a0c0c; }
+#title-card p { margin: 4px 0 0; letter-spacing: 6px; color: #e0c3a8; font-size: clamp(14px, 2.8vw, 24px); }
+
+#banner { position: fixed; top: 16%; left: 0; right: 0; text-align: center; z-index: 12; pointer-events: none;
+  font-family: 'Pirata One', serif; font-size: clamp(28px, 6vw, 54px); color: #e8c66a;
+  text-shadow: 0 0 16px rgba(255,50,30,.6), 0 3px 0 #300; opacity: 0; transition: opacity 1.2s; padding: 0 16px; }
+#banner.show { opacity: 1; }
+
+/* ---------- Diyalog ---------- */
+#dialog {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: max(16px, env(safe-area-inset-bottom));
+  width: min(760px, calc(100% - 32px)); display: none; gap: 14px; align-items: flex-start;
+  background: linear-gradient(rgba(30,4,10,.94), rgba(14,2,6,.96));
+  border: 2px solid #b8893a; box-shadow: 0 0 0 2px #1a0306, 0 0 30px rgba(0,0,0,.8);
+  padding: 12px; z-index: 18; cursor: pointer;
+}
+#dialog.show { display: flex; }
+#dlg-portrait { width: clamp(64px, 12vw, 96px); height: auto; aspect-ratio: 1; image-rendering: pixelated;
+  border: 2px solid #d6a640; flex-shrink: 0; background: #000; }
+#dlg-portrait.hidden { visibility: hidden; width: 0; border: 0; }
+#dialog.whisper #dlg-portrait { filter: grayscale(1) brightness(.2) sepia(1) hue-rotate(-40deg) saturate(6); }
+.dlg-body { flex: 1; min-width: 0; }
+#dlg-name { color: #f1cf6c; font-weight: 600; letter-spacing: 2px; margin-bottom: 6px; font-size: clamp(14px, 2.2vw, 18px); }
+#dialog.whisper #dlg-name { color: #ff5a5a; }
+#dlg-text { font-size: clamp(15px, 2.4vw, 20px); line-height: 1.4; min-height: 2.8em; color: #efe2cb; }
+#dialog.whisper #dlg-text { color: #ffb0a8; font-style: italic; }
+.dlg-next { text-align: right; color: #d6a640; font-size: 12px; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+
+/* ---------- HUD ---------- */
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: none; }
+#hud.show { display: block; }
+#objective { position: absolute; top: max(12px, env(safe-area-inset-top)); left: 16px; font-size: clamp(12px, 1.8vw, 16px);
+  color: #e8d2b0; text-shadow: 0 2px 0 #000, 0 0 8px #000; max-width: 55%; }
+body.touch #objective { top: max(76px, calc(env(safe-area-inset-top) + 66px)); }
+#objective::before { content: '◆ '; color: #d6a640; }
+#tip { position: absolute; top: 30%; left: 0; right: 0; text-align: center; font-size: clamp(13px, 2vw, 17px);
+  color: #f3e2c0; text-shadow: 0 2px 0 #000, 0 0 10px #000; opacity: 0; transition: opacity .8s; padding: 0 16px; }
+#tip.show { opacity: 1; }
+#tip b { color: #f1cf6c; }
+#boss { position: absolute; top: max(44px, calc(env(safe-area-inset-top) + 34px)); left: 50%; transform: translateX(-50%);
+  width: min(460px, 70%); text-align: center; display: none; }
+#boss.show { display: block; }
+#boss-name { font-family: 'Pirata One', serif; font-size: clamp(18px, 3vw, 26px); color: #ff6a5a; text-shadow: 0 2px 0 #000; }
+#boss-bar { height: 10px; border: 2px solid #8a6a2a; background: #1a0205; box-shadow: 0 0 0 2px #000; }
+#boss-fill { height: 100%; width: 100%; background: linear-gradient(#e0303a, #7a0a14); transition: width .15s; }
+
+#top-buttons { position: fixed; top: max(10px, env(safe-area-inset-top)); right: 12px; z-index: 25; display: flex; gap: 8px; }
+.icon-btn { background: rgba(20,2,6,.7); color: #e8c66a; border: 1px solid #8a6a2a; padding: 6px 10px;
+  font-size: 14px; cursor: pointer; min-width: 36px; }
+#btn-skip { display: none; }
+#btn-skip.show { display: block; }
+
+/* ---------- Dokunmatik ---------- */
+#touch { position: fixed; inset: 0; pointer-events: none; z-index: 11; display: none; }
+body.touch #touch.show { display: block; }
+#joy { position: absolute; width: 130px; height: 130px; border-radius: 50%;
+  border: 2px solid rgba(214,166,64,.45); background: rgba(40,5,10,.35);
+  left: 28px; bottom: max(28px, env(safe-area-inset-bottom)); opacity: .8; }
+#joy-knob { position: absolute; width: 56px; height: 56px; border-radius: 50%; left: 37px; top: 37px;
+  background: radial-gradient(circle at 40% 35%, #f6d36b, #9a6a1c); box-shadow: 0 0 12px rgba(255,200,80,.5); }
+#tbtns { position: absolute; right: max(20px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom));
+  width: 200px; height: 190px; pointer-events: none; }
+.tbtn { position: absolute; pointer-events: auto; border-radius: 50%; border: 2px solid #d6a640;
+  background: radial-gradient(circle at 40% 35%, rgba(120,20,30,.9), rgba(40,4,10,.9)); color: #f6d36b;
+  font-size: 28px; width: 70px; height: 70px; box-shadow: 0 0 14px rgba(0,0,0,.6); touch-action: none; }
+.tbtn.big { width: 92px; height: 92px; font-size: 40px; right: 0; bottom: 0; }
+#t-fire { right: 100px; bottom: 6px; }
+#t-dash { right: 14px; bottom: 104px; }
+.tbtn.small { width: 58px; height: 58px; font-size: 24px; }
+.tbtn.active { filter: brightness(1.6); transform: scale(.94); }

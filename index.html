@@ -2,48 +2,98 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Oyun</title>
-<style>
-  body { margin:0; background:#1a1a2e; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; align-items:center; }
-  canvas { background:#16213e; border-radius:8px; margin-top:12px; max-width:100%; touch-action:none; }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#120308">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Düşmüş Işık</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pirata+One&family=Pixelify+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h2>Yıldız Topla ⭐</h2>
-<p>Sepeti ← → tuşlarıyla (veya parmağınla) hareket ettir, yıldızları yakala!</p>
-<canvas id="c" width="400" height="500"></canvas>
-<script>
-const c = document.getElementById('c'), ctx = c.getContext('2d');
-let x = 170, skor = 0, can = 3, yildizlar = [], tuslar = {};
-addEventListener('keydown', e => tuslar[e.key] = true);
-addEventListener('keyup', e => tuslar[e.key] = false);
-c.addEventListener('pointermove', e => { const r = c.getBoundingClientRect(); x = (e.clientX - r.left) * c.width / r.width - 30; });
-function dongu() {
-  if (tuslar.ArrowLeft) x -= 6;
-  if (tuslar.ArrowRight) x += 6;
-  x = Math.max(0, Math.min(340, x));
-  if (Math.random() < 0.03) yildizlar.push({ x: Math.random() * 380 + 10, y: 0, h: 2 + Math.random() * 2 + skor / 20 });
-  ctx.clearRect(0, 0, 400, 500);
-  ctx.font = '24px sans-serif';
-  yildizlar.forEach(s => { s.y += s.h; ctx.fillText('⭐', s.x - 12, s.y); });
-  yildizlar = yildizlar.filter(s => {
-    if (s.y > 470 && s.y < 490 && s.x > x && s.x < x + 60) { skor++; return false; }
-    if (s.y > 500) { can--; return false; }
-    return true;
-  });
-  ctx.fillStyle = '#e94560'; ctx.fillRect(x, 475, 60, 15);
-  ctx.fillStyle = '#fff'; ctx.font = '18px sans-serif';
-  ctx.fillText('Skor: ' + skor + '   Can: ' + '❤️'.repeat(Math.max(0, can)), 10, 25);
-  if (can <= 0) {
-    ctx.font = '32px sans-serif'; ctx.fillText('Oyun Bitti!', 120, 240);
-    ctx.font = '18px sans-serif'; ctx.fillText('Tekrar için tıkla', 135, 275);
-    c.onclick = () => { skor = 0; can = 3; yildizlar = []; c.onclick = null; requestAnimationFrame(dongu); };
-    return;
-  }
-  requestAnimationFrame(dongu);
-}
-dongu();
-</script>
+<canvas id="game"></canvas>
+
+<!-- Başlık ekranı -->
+<div id="title" class="screen">
+  <div class="title-art"></div>
+  <div class="title-inner">
+    <h1>Düşmüş Işık</h1>
+    <p class="sub">Bölüm I — Uyanış</p>
+    <button id="btn-start" class="btn">Oyuna Başla</button>
+    <div class="controls-info pc-only">
+      <span><b>WASD</b> Hareket</span>
+      <span><b>Sol Tık</b> Kılıç</span>
+      <span><b>Sağ Tık</b> Kutsal Ateş</span>
+      <span><b>Boşluk</b> Kanat Atılışı</span>
+    </div>
+    <div class="controls-info touch-only">
+      <span>Sol taraf: Hareket</span>
+      <span>Sağ tuşlar: Kılıç · Ateş · Atılış</span>
+      <span>En iyi deneyim için telefonu yan çevir</span>
+    </div>
+  </div>
+</div>
+
+<!-- Sinematik yazı -->
+<div id="cine-text"></div>
+<div id="title-card"><h2>Düşmüş Işık</h2><p>Bölüm I — Uyanış</p></div>
+<div id="banner"></div>
+
+<!-- Diyalog -->
+<div id="dialog">
+  <img id="dlg-portrait" src="assets/portrait.png" alt="">
+  <div class="dlg-body">
+    <div id="dlg-name"></div>
+    <div id="dlg-text"></div>
+    <div class="dlg-next">▼</div>
+  </div>
+</div>
+
+<!-- HUD -->
+<div id="hud">
+  <div id="objective"></div>
+  <div id="tip"></div>
+  <div id="boss">
+    <div id="boss-name">Kanlı Bekçi</div>
+    <div id="boss-bar"><div id="boss-fill"></div></div>
+  </div>
+</div>
+
+<div id="top-buttons">
+  <button id="btn-skip" class="icon-btn">Geç ▸▸</button>
+  <button id="btn-mute" class="icon-btn" title="Ses">♪</button>
+  <button id="btn-full" class="icon-btn" title="Tam ekran">⛶</button>
+</div>
+
+<!-- Dokunmatik kontroller -->
+<div id="touch">
+  <div id="joy"><div id="joy-knob"></div></div>
+  <div id="tbtns">
+    <button id="t-sword" class="tbtn big">⚔</button>
+    <button id="t-fire" class="tbtn">✹</button>
+    <button id="t-dash" class="tbtn small">➶</button>
+  </div>
+</div>
+
+<!-- Ölüm / Son -->
+<div id="dead" class="screen overlay">
+  <h2>Düştün</h2>
+  <p>Ama ışık henüz sönmedi...</p>
+  <button id="btn-respawn" class="btn">Yeniden Doğ</button>
+</div>
+<div id="end" class="screen overlay">
+  <h2>Bölüm I Sonu</h2>
+  <p class="sub">Devam edecek...</p>
+  <p id="end-stats"></p>
+  <button id="btn-again" class="btn">Tekrar Oyna</button>
+</div>
+<div id="pause" class="screen overlay">
+  <h2>Duraklatıldı</h2>
+  <button id="btn-resume" class="btn">Devam Et</button>
+</div>
+
+<script src="js/game.js"></script>
 </body>
 </html>
