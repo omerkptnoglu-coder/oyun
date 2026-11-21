@@ -421,7 +421,7 @@ function buildMap() {
   for (let n = 0; n < 3; n++) scatter('tree', 39, 39, 6, { tall: true });
 
   // ---- Mezarlık ----
-  for (let n = 0; n < 22; n++) scatter('grave', 37, 24, 5.5, { tall: false, cross: rnd() < 0.4 });
+  for (let n = 0; n < 22; n++) scatter('grave', 37, 24, 5.5, { tall: false, solid: false, cross: rnd() < 0.4 });
   for (let n = 0; n < 5; n++) scatter('tree', 37, 24, 6, { tall: true });
   for (let n = 0; n < 6; n++) decals.push({ k: 'bones', x: 37 + rnd(-5, 5), y: 24 + rnd(-5, 5) });
 
@@ -861,7 +861,7 @@ const hero = {
   x: START.x, y: START.y, r: 0.28,
   hp: 100, maxHp: 100, mana: 100, maxMana: 100,
   face: 1, aimX: 1, aimY: 0, anim: 0, moving: false,
-  atkT: 0, atkCD: 0, atkDur: 0.28, hitDone: true, swingA0: 0, swingA1: 0,
+  atkT: 0, atkCD: 0, atkDur: 0.28, castT: 0, castX: 0, castY: 0, castZ: 26, hitDone: true, swingA0: 0, swingA1: 0,
   fireCD: 0, dashT: 0, dashCD: 0, dashX: 0, dashY: 0,
   invT: 0, flash: 0, visible: false, crouch: 1, wingSpread: 0, haloA: 0, dead: false,
 };
@@ -908,9 +908,41 @@ function freeSpot(x, y) {
 function collides(x, y, r) {
   return blocked(x - r, y - r) || blocked(x + r, y - r) || blocked(x - r, y + r) || blocked(x + r, y + r);
 }
+function tileBlocked(i, j) {
+  if (!inMap(i, j)) return true;
+  const k = idx(i, j);
+  return floor[k] === F.VOID || solid[k] === 1;
+}
+// Varlığı engel karolarından dışarı it (köşelerde takılmadan kayar)
+function pushOut(e) {
+  const r = e.r;
+  for (let it = 0; it < 3; it++) {
+    let moved = false;
+    const i0 = Math.floor(e.x - r), i1 = Math.floor(e.x + r), j0 = Math.floor(e.y - r), j1 = Math.floor(e.y + r);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      if (!tileBlocked(i, j)) continue;
+      const px = clamp(e.x, i, i + 1), py = clamp(e.y, j, j + 1);
+      let dx = e.x - px, dy = e.y - py;
+      const d = Math.hypot(dx, dy);
+      if (d >= r) continue;
+      if (d > 1e-6) { e.x += dx / d * (r - d + 0.001); e.y += dy / d * (r - d + 0.001); }
+      else {
+        // merkez karonun içinde: en kısa eksenden çık
+        const l = e.x - i, rr = i + 1 - e.x, t = e.y - j, b = j + 1 - e.y;
+        const m = Math.min(l, rr, t, b);
+        if (m === l) e.x = i - r - 0.001; else if (m === rr) e.x = i + 1 + r + 0.001;
+        else if (m === t) e.y = j - r - 0.001; else e.y = j + 1 + r + 0.001;
+      }
+      moved = true;
+    }
+    if (!moved) break;
+  }
+}
 function moveEnt(e, dx, dy) {
-  if (dx && !collides(e.x + dx, e.y, e.r)) e.x += dx;
-  if (dy && !collides(e.x, e.y + dy, e.r)) e.y += dy;
+  const n = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 0.15));
+  const ox = e.x, oy = e.y;
+  for (let s = 0; s < n; s++) { e.x += dx / n; e.y += dy / n; pushOut(e); }
+  if (!isFinite(e.x) || !isFinite(e.y) || collides(e.x, e.y, e.r * 0.5)) { e.x = ox; e.y = oy; }
 }
 
 // ---------------------------------------------------------
@@ -964,7 +996,7 @@ function computeAim(range) {
 function updateHero(dt) {
   const h = hero;
   h.anim += dt;
-  h.atkCD -= dt; h.fireCD -= dt; h.dashCD -= dt; h.invT -= dt; h.flash -= dt;
+  h.atkCD -= dt; h.castT -= dt; h.fireCD -= dt; h.dashCD -= dt; h.invT -= dt; h.flash -= dt;
   h.mana = Math.min(h.maxMana, h.mana + 5 * dt);
   if (h.dead) return;
 
@@ -1024,9 +1056,14 @@ function updateHero(dt) {
       h.face = a.sx >= 0 ? 1 : -1;
       h.aimX = a.wx; h.aimY = a.wy;
       h.mana -= 18; h.fireCD = 0.42;
-      projectiles.push({ owner: 'hero', x: h.x + a.wx * 0.5, y: h.y + a.wy * 0.5, z: 18, vx: a.wx * 9.5, vy: a.wy * 9.5, life: 1.3, dmg: 30, r: 0.35 });
+      // el, göğüs hizasından nişan yönüne uzanır; ateş tam elden çıkar
+      const sm = Math.hypot(a.sx, a.sy) || 1;
+      const k = 0.55;
+      const cz = clamp(30 - (a.sy / sm) * 11 + (a.wx + a.wy) * 8 * k, 14, 44);
+      h.castT = 0.3; h.castX = a.wx * k; h.castY = a.wy * k; h.castZ = cz;
+      projectiles.push({ owner: 'hero', x: h.x + a.wx * k, y: h.y + a.wy * k, z: cz, vx: a.wx * 9.5, vy: a.wy * 9.5, life: 1.3, dmg: 30, r: 0.35 });
       Sfx.fire();
-      burst(h.x + a.wx * 0.5, h.y + a.wy * 0.5, 18, 8, GOLD, 1.5, 2, 0.35, true, 0);
+      burst(h.x + a.wx * k, h.y + a.wy * k, cz, 10, GOLD, 1.5, 2, 0.3, true, 0);
     } else if (h.fireCD <= 0) {
       h.fireCD = 0.4; Sfx.nomana();
       tip(isTouch ? 'Mana yetersiz — kılıçla vurarak mana kazan' : 'Mana yetersiz — <b>kılıçla vurarak</b> mana kazan', 2200);
@@ -1519,6 +1556,21 @@ function drawHero() {
     ang = Math.PI / 2 - h.face * (0.35 + Math.sin(t * 2.6) * 0.04);
   }
   if (!h.dead && h.crouch < 0.95) drawSword(swordSpr, Math.round(hand.x), Math.round(hand.y), ang, 5, 3);
+  // büyü eli: omuzdan ateşin çıktığı noktaya uzanan zırhlı kol
+  if (h.castT > 0 && !h.dead) {
+    const shx = sx - h.face * 7, shy = sy - z - 22;
+    const tx = sx + Math.round((h.castX - h.castY) * 16), ty = sy + Math.round((h.castX + h.castY) * 8) - Math.round(h.castZ);
+    const steps = Math.max(1, Math.round(Math.hypot(tx - shx, ty - shy)));
+    for (let i = 0; i <= steps; i++) { const f = i / steps; P(Math.round(lerp(shx, tx, f)) - 2, Math.round(lerp(shy, ty, f)) - 2, 4, 4, HC.O); }
+    for (let i = 0; i <= steps; i++) { const f = i / steps; P(Math.round(lerp(shx, tx, f)) - 1, Math.round(lerp(shy, ty, f)) - 1, 2, 2, f > 0.75 ? HC.o : HC.y); }
+    const pulse = h.castT / 0.3;
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const gr = Math.round(3 + pulse * 4);
+    P(tx - gr, ty - gr, gr * 2, gr * 2, 'rgba(255,170,60,0.35)');
+    P(tx - 2, ty - 2, 4, 4, '#fff3b0'); P(tx - 1, ty - 1, 2, 2, '#ffffff');
+    ctx.restore();
+    light(tx, ty, 40 * pulse + 10, 0.8, 'rgba(255,200,100,');
+  }
   FL = null;
   ctx.globalAlpha = 1;
 }
