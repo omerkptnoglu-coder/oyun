@@ -113,7 +113,8 @@ const Sfx = {
     s.connect(f); f.connect(g); g.connect(this.master);
     s.start(t, Math.random()); s.stop(t + dur + 0.05);
   },
-  swing() { this.noise(0.2, 0.35, 600, 3500, 'bandpass', 1.5); },
+  swing() { this.noise(0.18, 0.35, 500 + Math.random() * 300, 3200 + Math.random() * 1200, 'bandpass', 1.5); },
+  heavy() { this.noise(0.32, 0.5, 300, 2400, 'bandpass', 1.2); this.tone(120, 0.25, 'sawtooth', 0.08, 60); },
   hit() { this.tone(140, 0.12, 'square', 0.18, 45); this.noise(0.12, 0.35, 2000, 300, 'lowpass'); },
   fire() { this.noise(0.35, 0.25, 300, 2800, 'bandpass', 2); this.tone(260, 0.3, 'sawtooth', 0.06, 760); },
   explode() { this.noise(0.45, 0.4, 1500, 80, 'lowpass'); this.tone(90, 0.3, 'sine', 0.25, 40); },
@@ -860,11 +861,22 @@ const tipsShown = {};
 const hero = {
   x: START.x, y: START.y, r: 0.28,
   hp: 100, maxHp: 100, mana: 100, maxMana: 100,
-  face: 1, aimX: 1, aimY: 0, anim: 0, moving: false,
-  atkT: 0, atkCD: 0, atkDur: 0.28, castT: 0, castX: 0, castY: 0, castZ: 26, hitDone: true, swingA0: 0, swingA1: 0,
-  fireCD: 0, dashT: 0, dashCD: 0, dashX: 0, dashY: 0,
+  vx: 0, vy: 0, moveAmt: 0, face: 1, back: false,
+  aimX: 1, aimY: 0, aimSX: 1, aimSY: 0, anim: 0, moving: false,
+  atk: null, lastStep: -1, comboT: 0, buffer: 0, atkCD: 0, trail: [],
+  castT: 0, castX: 0, castY: 0, castZ: 40, fireCD: 0,
+  dashT: 0, dashCD: 0, dashVX: 0, dashVY: 0, ghostT: 0, ghosts: [],
   invT: 0, flash: 0, visible: false, crouch: 1, wingSpread: 0, haloA: 0, dead: false,
 };
+// Hareket hızı (ekran pikseli / sn). Dikey biraz daha yavaş: izometrik derinlik hissi.
+const SPD_X = 104, SPD_Y = 76;
+// Kılıç kombosu: 3 vuruş (yatay kesik, ters kesik, ağır bitiriş)
+const ATK = [
+  { dur: 0.27, from: -1.9, to: 1.5, dmg: 24, kb: 5, lunge: 150, stop: 0.05, shake: 3, reach: 1.9 },
+  { dur: 0.25, from: 1.7, to: -1.7, dmg: 26, kb: 6, lunge: 150, stop: 0.05, shake: 3, reach: 1.9 },
+  { dur: 0.40, from: -2.7, to: 1.0, dmg: 42, kb: 11, lunge: 270, stop: 0.12, shake: 8, reach: 2.2 },
+];
+function screenVelToWorld(vx, vy) { return { x: vy / TH + vx / TW, y: vy / TH - vx / TW }; }
 
 // ---------------------------------------------------------
 // Düşmanlar
@@ -978,117 +990,196 @@ function nearestEnemy(range) {
   return best;
 }
 function computeAim(range) {
-  // ekran ve dünya yönünü belirle
   if (!isTouch && mouse.seen) {
     const hs = heroScreen();
-    let dx = mouse.x - hs.x, dy = mouse.y - (hs.y - 16);
+    let dx = mouse.x - hs.x, dy = mouse.y - (hs.y - 30);
     if (Math.hypot(dx, dy) < 1) dx = hero.face;
-    const w = screenDirToWorld(dx, dy);
-    return { sx: dx, sy: dy, wx: w.x, wy: w.y };
+    const w = screenDirToWorld(dx, dy), m = Math.hypot(dx, dy);
+    return { sx: dx / m, sy: dy / m, wx: w.x, wy: w.y };
   }
   const t = nearestEnemy(range);
   let wx, wy;
   if (t) { const d = Math.hypot(t.x - hero.x, t.y - hero.y) || 1; wx = (t.x - hero.x) / d; wy = (t.y - hero.y) / d; }
   else { wx = hero.aimX; wy = hero.aimY; }
-  return { sx: (wx - wy) * 16, sy: (wx + wy) * 8, wx, wy };
+  const sx = (wx - wy) * 16, sy = (wx + wy) * 8, m = Math.hypot(sx, sy) || 1;
+  return { sx: sx / m, sy: sy / m, wx, wy };
+}
+
+function heroHover(h) {
+  const base = h.moveAmt > 0.25 ? 7 + Math.sin(h.anim * 6) * 1 : 6 + Math.sin(h.anim * 2.4) * 1.5;
+  return Math.round(Math.max(0, base * (1 - h.crouch)));
+}
+function swordAngle(A) {
+  const p = clamp(A.t / A.d.dur, 0, 1), wind = 0.16;
+  const back = A.a0 - (A.a1 - A.a0) * 0.1;
+  if (p < wind) return lerp(A.a0, back, easeOut(p / wind));
+  const q = (p - wind) / (1 - wind);
+  return lerp(back, A.a1, 1 - Math.pow(1 - q, 4));
+}
+// Kılıç tutan elin konumu: kahramanın ayak noktasına göre (ekran pikseli)
+function heroSwordPose(h) {
+  const z = heroHover(h), lo = Math.round(h.crouch * 12);
+  const lean = Math.round(clamp(h.moveAmt, 0, 1.3) * 2) * h.face;
+  const shx = h.face * 6 + lean, shy = -z - 38 + lo;
+  if (h.atk) {
+    const a = swordAngle(h.atk);
+    return { shx, shy, hx: shx + Math.cos(a) * 10, hy: shy + Math.sin(a) * 7 + 2, ang: a };
+  }
+  const m = clamp(h.moveAmt, 0, 1.2);
+  const ang = Math.PI / 2 + h.face * (-0.28 + m * 0.8) + Math.sin(h.anim * 2.4) * 0.04;
+  return { shx, shy, hx: shx + h.face * (3 - m * 3), hy: shy + 13, ang };
+}
+
+function startAttack(step) {
+  const h = hero, d = ATK[step];
+  const a = computeAim(3.5);
+  h.aimX = a.wx; h.aimY = a.wy; h.aimSX = a.sx; h.aimSY = a.sy;
+  h.face = a.sx >= 0 ? 1 : -1;
+  h.back = a.sy < -0.45;
+  const ang = Math.atan2(a.sy, a.sx), s = h.face;
+  h.atk = { step, d, t: 0, hit: false, a0: ang + d.from * s, a1: ang + d.to * s };
+  const lg = nearestEnemy(1.0) ? d.lunge * 0.3 : d.lunge;
+  h.vx = a.sx * lg; h.vy = a.sy * lg * 0.72;
+  if (step === 2) Sfx.heavy(); else Sfx.swing();
 }
 
 function updateHero(dt) {
   const h = hero;
   h.anim += dt;
-  h.atkCD -= dt; h.castT -= dt; h.fireCD -= dt; h.dashCD -= dt; h.invT -= dt; h.flash -= dt;
+  h.atkCD -= dt; h.castT -= dt; h.fireCD -= dt; h.dashCD -= dt; h.invT -= dt; h.flash -= dt; h.comboT -= dt; h.buffer -= dt;
   h.mana = Math.min(h.maxMana, h.mana + 5 * dt);
-  if (h.dead) return;
+  for (let i = h.ghosts.length - 1; i >= 0; i--) { h.ghosts[i].t -= dt; if (h.ghosts[i].t <= 0) h.ghosts.splice(i, 1); }
+  for (const tr of h.trail) tr.age += dt;
+  while (h.trail.length && h.trail[0].age > 0.12) h.trail.shift();
+  if (h.dead) { h.vx = h.vy = 0; h.atk = null; return; }
 
-  // hareket girdisi (ekran yönü)
+  // ---- girdi (ekran yönü) ----
   let mx = 0, my = 0;
   if (keys.a || keys.arrowleft) mx -= 1;
   if (keys.d || keys.arrowright) mx += 1;
   if (keys.w || keys.arrowup) my -= 1;
   if (keys.s || keys.arrowdown) my += 1;
   if (joy.active) { mx = joy.x; my = joy.y; }
-  const mag = Math.hypot(mx, my);
-  h.moving = false;
-  let wdx = 0, wdy = 0;
-  if (mag > 0.18) {
-    const w = screenDirToWorld(mx * 2, my); // ekranda yatay hareket 2 kat piksel alır
-    wdx = w.x; wdy = w.y;
-    h.aimX = w.x; h.aimY = w.y;
-    h.moving = true;
-    if (h.atkT <= 0 && Math.abs(mx) > 0.1) h.face = mx > 0 ? 1 : -1;
+  let mag = Math.hypot(mx, my);
+  if (mag > 1) { mx /= mag; my /= mag; mag = 1; }
+  if (mag < 0.15) { mx = my = 0; mag = 0; }
+  h.moving = mag > 0;
+  if (h.moving) {
+    const w = screenDirToWorld(mx, my); h.aimX = w.x; h.aimY = w.y;
+    if (!h.atk && h.castT <= 0) { h.aimSX = mx / mag; h.aimSY = my / mag; }
   }
 
-  // atılış
+  // ---- kanat atılışı (saldırıyı iptal eder) ----
   if ((keys[' '] || keys.shift || touch.dash) && h.dashCD <= 0) {
-    const dir = h.moving ? { x: wdx, y: wdy } : { x: h.aimX, y: h.aimY };
-    h.dashX = dir.x; h.dashY = dir.y; h.dashT = 0.2; h.dashCD = 0.85; h.invT = Math.max(h.invT, 0.25);
+    let dx = mx, dy = my;
+    if (!h.moving) { dx = h.aimSX; dy = h.aimSY; }
+    const m = Math.hypot(dx, dy) || 1;
+    dx /= m; dy /= m;
+    h.dashVX = dx * 440; h.dashVY = dy * 440 * 0.72;
+    h.dashT = 0.17; h.dashCD = 0.7; h.invT = Math.max(h.invT, 0.3); h.atk = null; h.ghostT = 0;
+    if (Math.abs(dx) > 0.15) h.face = dx > 0 ? 1 : -1;
+    h.back = dy < -0.35;
     Sfx.dash();
-    for (let i = 0; i < 10; i++) addParticle({ x: h.x, y: h.y, z: 14 + Math.random() * 14, vx: (Math.random() - 0.5) * 2, vy: (Math.random() - 0.5) * 2, vz: 4, g: 2, life: 0.8, max: 0.8, c: Math.random() < 0.8 ? '#f1ebe0' : '#a3162a', s: 2 });
+    for (let i = 0; i < 12; i++) addParticle({ x: h.x, y: h.y, z: 20 + Math.random() * 24, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3, vz: 3, g: 2, life: 0.9, max: 0.9, c: Math.random() < 0.8 ? '#f1ebe0' : '#a3162a', s: 2 });
   }
+
+  // ---- hız (ivmeli) ----
   if (h.dashT > 0) {
-    h.dashT -= dt;
-    moveEnt(h, h.dashX * 13 * dt, h.dashY * 13 * dt);
-    if (Math.random() < 0.6) addParticle({ x: h.x, y: h.y, z: 10 + Math.random() * 20, life: 0.4, max: 0.4, c: '#f6d36b', s: 1, add: true });
-  } else if (h.moving) {
-    const sp = 4.3 * Math.min(1, mag) * (h.atkT > 0 ? 0.45 : 1);
-    moveEnt(h, wdx * sp * dt, wdy * sp * dt);
+    h.dashT -= dt; h.vx = h.dashVX; h.vy = h.dashVY;
+    h.ghostT -= dt;
+    if (h.ghostT <= 0) { h.ghostT = 0.03; h.ghosts.push({ x: h.x, y: h.y, face: h.face, back: h.back, anim: h.anim, t: 0.3 }); }
+    if (h.dashT <= 0) { h.vx *= 0.35; h.vy *= 0.35; }
+  } else {
+    const slow = h.atk ? 0.3 : (h.castT > 0 ? 0.6 : 1);
+    const tx = mx * SPD_X * slow, ty = my * SPD_Y * slow;
+    if (h.atk && h.atk.t < h.atk.d.dur * 0.4) {
+      const k = Math.pow(0.004, dt); h.vx *= k; h.vy *= k; // ileri hamle sönümlenir
+    } else {
+      const k = Math.min(1, dt * (h.moving ? 13 : 16));
+      h.vx += (tx - h.vx) * k; h.vy += (ty - h.vy) * k;
+    }
+  }
+  const wv = screenVelToWorld(h.vx, h.vy);
+  moveEnt(h, wv.x * dt, wv.y * dt);
+  const sp = Math.hypot(h.vx, h.vy / 0.72);
+  h.moveAmt = lerp(h.moveAmt, clamp(sp / SPD_X, 0, 1.4), Math.min(1, dt * 10));
+
+  // ---- yön ----
+  if (!h.atk && h.castT <= 0 && h.dashT <= 0 && h.moving) {
+    if (Math.abs(mx) > 0.2) h.face = mx > 0 ? 1 : -1;
+    if (my < -0.35) h.back = true; else if (my > 0.15) h.back = false;
   }
 
-  // kılıç
-  if ((mouse.l || touch.sword || keys.j) && h.atkCD <= 0 && h.dashT <= 0) {
-    const a = computeAim(3.5);
-    const ang = Math.atan2(a.sy, a.sx);
-    h.face = a.sx >= 0 ? 1 : -1;
-    h.aimX = a.wx; h.aimY = a.wy;
-    h.swingA0 = ang - 1.8 * h.face; h.swingA1 = ang + 1.6 * h.face;
-    h.atkT = h.atkDur; h.atkCD = 0.36; h.hitDone = false;
-    Sfx.swing();
+  // ---- kılıç kombosu ----
+  if (mouse.l || touch.sword || keys.j) h.buffer = 0.18;
+  if (h.atk) {
+    const A = h.atk;
+    A.t += dt;
+    const p = A.t / A.d.dur;
+    if (!A.hit && p >= 0.32) { A.hit = true; swordHit(A); }
+    const chain = p >= 0.62 && h.buffer > 0 && A.step < 2;
+    if (p >= 1 || chain) {
+      h.lastStep = A.step; h.comboT = 0.45; h.atk = null;
+      if (A.step === 2) h.atkCD = 0.3;
+      if (chain) { h.buffer = 0; startAttack(A.step + 1); }
+    }
+  } else if (h.buffer > 0 && h.atkCD <= 0 && h.dashT <= 0) {
+    h.buffer = 0;
+    startAttack(h.comboT > 0 && h.lastStep < 2 ? h.lastStep + 1 : 0);
   }
-  if (h.atkT > 0) {
-    h.atkT -= dt;
-    if (!h.hitDone && h.atkT < h.atkDur - 0.07) { h.hitDone = true; swordHit(); }
+  if (h.atk) {
+    const ps = heroSwordPose(h), c = Math.cos(ps.ang), s = Math.sin(ps.ang);
+    h.trail.push({ bx: ps.hx + c * 12, by: ps.hy + s * 12, tx: ps.hx + c * 31, ty: ps.hy + s * 31, age: 0 });
   }
 
-  // kutsal ateş
-  if ((mouse.r || touch.fire || keys.k) && h.fireCD <= 0 && h.dashT <= 0) {
+  // ---- kutsal ateş ----
+  if ((mouse.r || touch.fire || keys.k) && h.fireCD <= 0 && h.dashT <= 0 && !h.atk) {
     if (h.mana >= 18) {
       const a = computeAim(11);
       h.face = a.sx >= 0 ? 1 : -1;
-      h.aimX = a.wx; h.aimY = a.wy;
-      h.mana -= 18; h.fireCD = 0.42;
-      // el, göğüs hizasından nişan yönüne uzanır; ateş tam elden çıkar
-      const sm = Math.hypot(a.sx, a.sy) || 1;
+      h.back = a.sy < -0.45;
+      h.aimX = a.wx; h.aimY = a.wy; h.aimSX = a.sx; h.aimSY = a.sy;
+      h.mana -= 18; h.fireCD = 0.38;
       const k = 0.55;
-      const cz = clamp(30 - (a.sy / sm) * 11 + (a.wx + a.wy) * 8 * k, 14, 44);
+      const cz = clamp(heroHover(h) + 38 - a.sy * 13 + (a.wx + a.wy) * 8 * k, 20, 64);
       h.castT = 0.3; h.castX = a.wx * k; h.castY = a.wy * k; h.castZ = cz;
-      projectiles.push({ owner: 'hero', x: h.x + a.wx * k, y: h.y + a.wy * k, z: cz, vx: a.wx * 9.5, vy: a.wy * 9.5, life: 1.3, dmg: 30, r: 0.35 });
+      projectiles.push({ owner: 'hero', x: h.x + a.wx * k, y: h.y + a.wy * k, z: cz, vx: a.wx * 10, vy: a.wy * 10, life: 1.3, dmg: 30, r: 0.35 });
+      h.vx -= a.sx * 40; h.vy -= a.sy * 30; // hafif geri tepme
       Sfx.fire();
       burst(h.x + a.wx * k, h.y + a.wy * k, cz, 10, GOLD, 1.5, 2, 0.3, true, 0);
-    } else if (h.fireCD <= 0) {
+    } else {
       h.fireCD = 0.4; Sfx.nomana();
       tip(isTouch ? 'Mana yetersiz — kılıçla vurarak mana kazan' : 'Mana yetersiz — <b>kılıçla vurarak</b> mana kazan', 2200);
     }
   }
 
-  // Kanat tüyü / hale parıltısı
-  if (Math.random() < dt * 3) addParticle({ x: h.x + (Math.random() - 0.5) * 0.6, y: h.y + (Math.random() - 0.5) * 0.6, z: 30 + Math.random() * 12, vz: 3, g: 0, life: 1.2, max: 1.2, c: '#ffe8a0', s: 1, add: true });
+  if (Math.random() < dt * 3) addParticle({ x: h.x + (Math.random() - 0.5) * 0.6, y: h.y + (Math.random() - 0.5) * 0.6, z: 44 + Math.random() * 14, vz: 3, g: 0, life: 1.2, max: 1.2, c: '#ffe8a0', s: 1, add: true });
+  if (h.moveAmt > 0.5 && Math.random() < dt * 10) addParticle({ x: h.x, y: h.y, z: 1, vx: (Math.random() - 0.5) * 0.8, vy: (Math.random() - 0.5) * 0.8, vz: 1, g: 2, life: 0.5, max: 0.5, c: '#4a3a36', s: 1 });
 }
 
-function swordHit() {
-  const h = hero;
+function swordHit(A) {
+  const h = hero, d = A.d;
   let any = false;
   for (const e of enemies) {
     if (e.dead || e.state === 'sleep') continue;
-    const dx = e.x - h.x, dy = e.y - h.y, d = Math.hypot(dx, dy);
-    if (d > 1.75 + e.r) continue;
-    const dot = d > 0.01 ? (dx * h.aimX + dy * h.aimY) / d : 1;
-    if (dot < 0.15 && d > 0.7) continue;
-    const dmg = 22 + Math.random() * 12;
-    damageEnemy(e, dmg, dx / (d || 1), dy / (d || 1), 5);
+    const dx = e.x - h.x, dy = e.y - h.y, dist = Math.hypot(dx, dy) || 0.001;
+    if (dist > d.reach + e.r) continue;
+    const dot = (dx * h.aimX + dy * h.aimY) / dist;
+    if (A.step < 2 && dot < 0.1 && dist > 0.8) continue;
+    if (A.step === 2 && dot < -0.2 && dist > 1.3) continue;
+    damageEnemy(e, d.dmg + Math.random() * 10, dx / dist, dy / dist, d.kb);
+    const ez = e.type === 'boss' ? 30 : 14;
+    for (let i = 0; i < 9; i++) addParticle({ x: e.x, y: e.y, z: ez + Math.random() * 8, vx: (Math.random() - 0.5) * 5 + dx / dist * 3, vy: (Math.random() - 0.5) * 5 + dy / dist * 3, vz: Math.random() * 4, g: 6, life: 0.25, max: 0.25, c: i % 2 ? '#fff3b0' : '#ffffff', s: 1, add: true });
     any = true;
   }
+  if (A.step === 2) {
+    const px = h.x + h.aimX * 1.2, py = h.y + h.aimY * 1.2;
+    fx.shock = { x: px, y: py, t: 0, max: 0.35, r: 1.7 };
+    burst(px, py, 1, 16, ['#4a3a36', '#6a5a56', '#f6d36b'], 3, 3, 0.6, false, 6);
+    shake = Math.max(shake, 3);
+  }
   if (any) {
-    Sfx.hit(); hitstop = 0.06; shake = Math.max(shake, 3);
+    Sfx.hit(); hitstop = d.stop; shake = Math.max(shake, d.shake);
     h.mana = Math.min(h.maxMana, h.mana + 5);
   }
 }
@@ -1096,6 +1187,8 @@ function swordHit() {
 function damageEnemy(e, dmg, nx, ny, kb) {
   if (e.dead) return;
   e.hp -= dmg; e.flash = 0.12;
+  e.stun = e.type === 'boss' ? 0.04 : 0.24;
+  if (e.type !== 'boss' && (e.state === 'windup' || e.state === 'cast')) e.state = 'chase';
   if (e.type !== 'boss') { e.kbx += nx * kb; e.kby += ny * kb; }
   else { e.kbx += nx * kb * 0.15; e.kby += ny * kb * 0.15; }
   e.aggro = true;
@@ -1116,7 +1209,7 @@ function killEnemy(e) {
 function damageHero(dmg, sx, sy) {
   const h = hero;
   if (h.dead || h.invT > 0 || h.dashT > 0 || state !== 'play') return;
-  h.hp -= dmg; h.invT = 0.6; h.flash = 0.2;
+  h.hp -= dmg; h.invT = 0.6; h.flash = 0.08;
   shake = Math.max(shake, 5);
   fx.red = Math.max(fx.red, 0.35);
   Sfx.hurt();
@@ -1138,6 +1231,7 @@ function updateEnemies(dt) {
       moveEnt(e, e.kbx * dt, e.kby * dt);
       e.kbx *= Math.pow(0.0005, dt); e.kby *= Math.pow(0.0005, dt);
     }
+    if (e.stun > 0) { e.stun -= dt; continue; }
     const dx = hero.x - e.x, dy = hero.y - e.y, d = Math.hypot(dx, dy) || 0.001;
     const nx = dx / d, ny = dy / d;
     if (hero.dead) { e.state = e.state === 'sleep' ? 'sleep' : 'idle'; continue; }
@@ -1434,135 +1528,229 @@ function feather(x0, y0, x1, y1, pass) {
     }
   }
 }
-function drawWing(s, spread, flap, lo) {
-  const rootX = s * 5, rootY = -25 + lo;
-  const wristX = s * (6 + 15 * spread), wristY = -37 - 5 * spread + flap + lo;
-  const tipX = s * (8 + 24 * spread), tipY = -27 + flap * 1.6 + lo;
+function drawWing(s, spread, flap, lo, sweep) {
+  const rootX = s * 4, rootY = -38 + lo;
+  const wristX = s * (6 + 15 * spread) - sweep, wristY = -53 - 5 * spread + flap + lo;
+  const tipX = s * (8 + 23 * spread) - sweep * 1.6, tipY = -42 + flap * 1.6 + lo;
   const N = 16, list = [];
   for (let k = N - 1; k >= 0; k--) {
     const f = k / (N - 1);
     let ax, ay;
     if (f < 0.5) { const q = f / 0.5; ax = lerp(rootX, wristX, q); ay = lerp(rootY, wristY, q); }
     else { const q = (f - 0.5) / 0.5; ax = lerp(wristX, tipX, q); ay = lerp(wristY, tipY, q); }
-    const len = (7 + f * 24) * (0.35 + 0.65 * spread);
-    list.push([ax, ay, ax + s * (1 + f * 7) * spread, ay + len]);
+    const len = (7 + f * 22 + Math.sin(f * Math.PI) * 4) * (0.35 + 0.65 * spread);
+    list.push([ax, ay, ax + s * (1 + f * 6) * spread - sweep * f, ay + len]);
   }
   for (const L of list) feather(L[0], L[1], L[2], L[3], 0);
   for (const L of list) feather(L[0], L[1], L[2], L[3], 1);
-  // örtü tüyleri
   for (let k = 0; k < 6; k++) {
     const f = k / 5;
-    const ax = lerp(rootX, wristX, f), ay = lerp(rootY, wristY, f);
-    P(Math.round(ax) - 2, Math.round(ay) - 1, 5, 5, HC.O);
-    P(Math.round(ax) - 1, Math.round(ay), 3, 3, HC.wh);
-    P(Math.round(ax) - 1, Math.round(ay) + 2, 3, 1, HC.whS);
+    const ax = Math.round(lerp(rootX, wristX, f)), ay = Math.round(lerp(rootY, wristY, f));
+    P(ax - 2, ay - 1, 5, 5, HC.O); P(ax - 1, ay, 3, 3, HC.wh); P(ax - 1, ay + 2, 3, 1, HC.whS);
   }
 }
 function drawHalo(y, a) {
-  ctx.globalAlpha = a;
-  for (let k = 0; k < 40; k++) {
-    const t = k / 40 * TAU;
-    P(Math.round(Math.cos(t) * 8), Math.round(y + Math.sin(t) * 2.5), 1, 1, k % 3 ? '#f6d36b' : '#fff3b0');
+  ctx.globalAlpha *= a;
+  for (let k = 0; k < 44; k++) {
+    const t = k / 44 * TAU;
+    P(Math.round(Math.cos(t) * 9), Math.round(y + Math.sin(t) * 2.5), 1, 1, k % 3 ? '#f6d36b' : '#fff3b0');
   }
   for (let k = 0; k < 9; k++) {
     const t = Math.PI + (k + 0.5) / 9 * Math.PI;
-    const bx = Math.cos(t) * 8, by = y + Math.sin(t) * 2.5;
+    const bx = Math.cos(t) * 9, by = y + Math.sin(t) * 2.5;
     for (let l = 1; l <= 3 + (k % 2); l++) P(Math.round(bx + Math.cos(t) * l * 0.6), Math.round(by + Math.sin(t) * l), 1, 1, '#f6d36b');
   }
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha /= a;
 }
 function drawSword(spr, x, y, ang, px, py) {
   ctx.save(); ctx.translate(x, y); ctx.rotate(ang); ctx.drawImage(spr, -px, -py); ctx.restore();
 }
+// Kalın bölüm çizgisi (uzuvlar): önce dış hat, sonra dolgu
+function seg(x0, y0, x1, y1, w, c, o) {
+  const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
+  const hw = w >> 1;
+  if (o) for (let i = 0; i <= n; i++) { const f = i / n; P(Math.round(lerp(x0, x1, f)) - hw - 1, Math.round(lerp(y0, y1, f)) - hw - 1, w + 2, w + 2, o); }
+  for (let i = 0; i <= n; i++) { const f = i / n; P(Math.round(lerp(x0, x1, f)) - hw, Math.round(lerp(y0, y1, f)) - hw, w, w, c); }
+}
 
-function drawHero() {
+// Pelerin: omuzlardan dizlere, harekette geriye savrulur
+function drawCape(X, u, m, t, front, narrow) {
+  const top = -40 + u, bot = -5 + Math.round(u * 0.3);
+  const wT = narrow ? 5 : 7, wB = narrow ? 6 : 8;
+  for (let y = top; y <= bot; y++) {
+    const f = (y - top) / (bot - top);
+    const fl = Math.sin(t * 4 + f * 5) * f * 1.5;
+    const l = Math.round(lerp(X - wT, -wB - 1 - m * 7, f) + fl), r = Math.round(lerp(X + wT, wB - 1 - m * 7, f) + fl);
+    P(l - 1, y, r - l + 2, 1, HC.O);
+    P(l, y, r - l, 1, f > 0.9 ? HC.ruD : HC.whS);
+    if (front) P(l, y, Math.max(1, Math.round((r - l) * 0.35)), 1, f > 0.9 ? '#a3162a' : HC.wh);
+  }
+  for (let k = 0; k < 8; k++) {
+    const x = Math.round(lerp(-wB - 1 - m * 7, wB - 1 - m * 7, k / 7));
+    P(x, bot + 1, 2, 1 + ((k + Math.floor(t * 5)) % 2), HC.ruD);
+  }
+}
+function drawLegs(c, u, m, t, back) {
+  const sw = Math.sin(t * (m > 0.25 ? 7 : 2)) * (m > 0.25 ? 1 : 0.35);
+  const hipY = -22 + u;
+  const legs = [
+    { hx: -2, fx: -2 - m * 4 - sw * m * 2, fy: -1 + m * 2, kfx: -9, kkx: -3, kky: -2, dark: true },
+    { hx: 2, fx: 3 - m * 2 + sw * m * 2, fy: 0, kfx: 6, kkx: 6, kky: -9, dark: false },
+  ];
+  for (const L of legs) {
+    const fx = lerp(L.fx, L.kfx, c), fy = lerp(L.fy, 0, c);
+    const kx = lerp((L.hx + L.fx) / 2 + 1.5, L.kkx, c), ky = lerp((hipY + L.fy) / 2, L.kky, c);
+    const col = L.dark ? HC.o : HC.y, hl = L.dark ? HC.y : HC.Y;
+    seg(L.hx, hipY, kx, ky, 5, col, HC.O);
+    seg(kx, ky, fx, fy - 2, 4, col, HC.O);
+    seg(L.hx - 1, hipY, kx - 1, ky, 1, hl);
+    P(Math.round(kx) - 1, Math.round(ky) - 1, 3, 3, hl); P(Math.round(kx), Math.round(ky), 1, 1, HC.ru);
+    P(Math.round(fx) - 2, Math.round(fy) - 3, 4, 3, HC.O); P(Math.round(fx) - 1, Math.round(fy) - 2, 3, 2, HC.o);
+    P(Math.round(fx) + (back ? -2 : 1), Math.round(fy) - 1, 2, 1, HC.O);
+  }
+}
+function drawBodyFront(m, t, u, lean, c, castOff) {
+  const X = lean;
+  drawCape(X, u, m, t, false);
+  // arka omuzluk + arka kol
+  P(X - 11, -44 + u, 7, 8, HC.O); P(X - 10, -43 + u, 5, 6, HC.o); P(X - 10, -43 + u, 5, 1, HC.y);
+  if (!castOff) {
+    const sw = Math.sin(t * 7) * m * 2;
+    seg(X - 8, -38 + u, X - 9 - sw, -31 + u, 4, HC.o, HC.O);
+    seg(X - 9 - sw, -31 + u, X - 8 - sw * 1.5, -25 + u, 4, HC.d, HC.O);
+  }
+  drawLegs(c, u, m, t, false);
+  // tabard
+  const tb = Math.round(-m * 3 + Math.sin(t * 3) * 0.6);
+  seg(0, -25 + u, tb, -9 + u, 3, HC.ru, HC.O);
+  P(tb - 1, -10 + u, 3, 2, HC.ruD);
+  // tassetler + kemer
+  P(-7, -27 + u, 6, 7, HC.O); P(-6, -26 + u, 4, 5, HC.o); P(-6, -26 + u, 4, 1, HC.y);
+  P(1, -27 + u, 6, 7, HC.O); P(2, -26 + u, 4, 5, HC.y); P(2, -26 + u, 4, 1, HC.Y);
+  P(X - 6, -29 + u, 13, 3, HC.O); P(X - 5, -28 + u, 11, 1, HC.d); P(X, -29 + u, 2, 3, HC.ruL);
+  // göğüs zırhı
+  P(X - 7, -42 + u, 14, 14, HC.O);
+  P(X - 6, -41 + u, 12, 12, HC.y);
+  P(X - 6, -41 + u, 5, 11, HC.Y); P(X - 6, -41 + u, 1, 8, HC.HL);
+  P(X + 3, -40 + u, 3, 11, HC.o);
+  P(X - 5, -31 + u, 10, 1, HC.o); P(X - 4, -34 + u, 8, 1, HC.o);
+  P(X - 5, -40 + u, 4, 1, HC.wh); P(X - 4, -39 + u, 3, 1, HC.wh); P(X + 2, -40 + u, 4, 1, HC.wh); P(X + 2, -39 + u, 3, 1, HC.whS);
+  P(X - 1, -38 + u, 3, 4, HC.O); P(X, -37 + u, 1, 2, HC.ruL); P(X + 1, -37 + u, 1, 2, HC.ru);
+  // boyun
+  P(X - 2, -44 + u, 4, 3, HC.O); P(X - 1, -44 + u, 2, 2, HC.skS);
+  // saç (arka kütle, rüzgârla savrulur)
+  const hx = X + 1, wind = m * 3 + Math.sin(t * 3) * 0.8;
+  seg(hx - 4, -51 + u, hx - 6 - wind, -40 + u, 4, HC.ha, HC.O);
+  seg(hx - 5 - wind, -45 + u, hx - 8 - wind, -38 + u, 3, HC.haS, HC.O);
+  // baş
+  P(hx - 4, -52 + u, 8, 10, HC.O); P(hx - 3, -51 + u, 6, 8, HC.sk);
+  P(hx - 3, -44 + u, 6, 1, HC.skS); P(hx - 3, -51 + u, 1, 8, HC.skS);
+  P(hx, -48 + u, 1, 1, '#2a1a14'); P(hx + 2, -48 + u, 1, 1, '#2a1a14');
+  P(hx, -49 + u, 3, 1, HC.skS); P(hx + 2, -47 + u, 1, 2, HC.skS); P(hx, -45 + u, 2, 1, '#a0604a');
+  // saç üstü + perçem
+  P(hx - 5, -55 + u, 10, 4, HC.O); P(hx - 4, -55 + u, 8, 3, HC.ha); P(hx - 2, -55 + u, 4, 1, '#fff0b0');
+  P(hx - 4, -52 + u, 2, 7, HC.ha); P(hx - 4, -46 + u, 1, 2, HC.haS); P(hx + 2, -52 + u, 2, 2, HC.ha);
+  // ön omuzluk
+  P(X + 4, -46 + u, 8, 9, HC.O); P(X + 5, -45 + u, 6, 7, HC.Y); P(X + 5, -45 + u, 6, 1, HC.HL);
+  P(X + 5, -39 + u, 6, 1, HC.o); P(X + 7, -43 + u, 2, 2, HC.ru); P(X + 7, -43 + u, 1, 1, HC.ruL);
+}
+function drawBodyBack(m, t, u, lean, c) {
+  const X = lean;
+  drawLegs(c, u, m, t, true);
+  P(-7, -27 + u, 6, 7, HC.O); P(-6, -26 + u, 4, 5, HC.y);
+  P(1, -27 + u, 6, 7, HC.O); P(2, -26 + u, 4, 5, HC.o);
+  // kollar
+  const sw = Math.sin(t * 7) * m * 2;
+  seg(X - 8, -38 + u, X - 9 + sw, -26 + u, 4, HC.y, HC.O);
+  // sırt zırhı
+  P(X - 7, -42 + u, 14, 14, HC.O); P(X - 6, -41 + u, 12, 12, HC.o); P(X - 6, -41 + u, 5, 11, HC.y);
+  P(X - 6, -29 + u, 12, 2, HC.d);
+  // omuzluklar
+  P(X - 11, -45 + u, 7, 8, HC.O); P(X - 10, -44 + u, 5, 6, HC.y); P(X - 10, -44 + u, 5, 1, HC.Y);
+  P(X + 4, -45 + u, 7, 8, HC.O); P(X + 5, -44 + u, 5, 6, HC.y); P(X + 5, -44 + u, 5, 1, HC.Y);
+  // baş (arkadan saç)
+  const hx = X, wind = Math.sin(t * 3) * 0.8;
+  P(hx - 5, -55 + u, 10, 11, HC.O); P(hx - 4, -54 + u, 8, 9, HC.ha); P(hx - 2, -54 + u, 3, 1, '#fff0b0');
+  P(hx - 3, -50 + u, 1, 6, HC.haS); P(hx + 1, -51 + u, 1, 6, HC.haS);
+  seg(hx - 2, -45 + u, hx - 3 + wind, -37 + u, 5, HC.ha, HC.O);
+  P(hx - 3 + Math.round(wind), -41 + u, 1, 4, HC.haS); P(hx - 1, -50 + u, 1, 5, HC.haS);
+  drawCape(X, u, m * 0.6, t, true, true);
+}
+
+function drawSwordArm(sx, sy, ps) {
+  const shx = sx + ps.shx, shy = sy + ps.shy, hx = sx + ps.hx, hy = sy + ps.hy;
+  // kılıç izi (kombo savruluşu)
+  const tr = hero.trail;
+  if (tr.length > 1) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    for (let i = 1; i < tr.length; i++) {
+      const a = tr[i - 1], b = tr[i];
+      const al = Math.max(0, 1 - b.age / 0.12);
+      ctx.fillStyle = `rgba(255,214,140,${(al * 0.55).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(sx + a.bx, sy + a.by); ctx.lineTo(sx + a.tx, sy + a.ty);
+      ctx.lineTo(sx + b.tx, sy + b.ty); ctx.lineTo(sx + b.bx, sy + b.by); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = `rgba(255,255,240,${al.toFixed(3)})`; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(sx + a.tx, sy + a.ty); ctx.lineTo(sx + b.tx, sy + b.ty); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  seg(shx, shy, hx, hy, 4, HC.y, HC.O);
+  P(Math.round(hx) - 2, Math.round(hy) - 2, 4, 4, HC.o);
+  drawSword(swordSpr, Math.round(hx), Math.round(hy), ps.ang, 5, 3);
+}
+
+function drawHero(g) {
   const h = hero;
   if (!h.visible) return;
-  const sx = sX(h.x, h.y), sy = sY(h.x, h.y);
-  const t = h.anim;
-  const lo = Math.round(h.crouch * 7);
-  const z = Math.round(Math.max(0, 5 + Math.sin(t * 2.6) * 1.5 - h.crouch * 6));
-  shadow(sx, sy, 9 - Math.min(3, z / 3), 0.5);
-  if (h.dead) ctx.globalAlpha = 0.5;
-  if (h.invT > 0 && h.dashT <= 0 && Math.floor(time * 20) % 2 === 0) ctx.globalAlpha = 0.55;
-  FL = h.flash > 0 ? '#ffb0a0' : null;
+  const ghost = !!g;
+  if (!ghost) for (const gh of h.ghosts) drawHero(gh);
+  const px = ghost ? g.x : h.x, py = ghost ? g.y : h.y;
+  const face = ghost ? g.face : h.face, back = ghost ? g.back : h.back;
+  const t = ghost ? g.anim : h.anim;
+  const m = ghost ? 1.3 : clamp(h.moveAmt, 0, 1.3);
+  const sx = sX(px, py), sy = sY(px, py);
+  const z = heroHover(h);
+  const u = Math.round(h.crouch * 12);
+  const lean = Math.round(m * 2);
+  if (!ghost) shadow(sx, sy, 10 - Math.min(3, z / 3), 0.5);
+  let alpha = 1;
+  if (ghost) alpha = clamp(g.t / 0.3, 0, 1) * 0.4;
+  else if (h.dead) alpha = 0.5;
+  else if (h.invT > 0 && h.dashT <= 0 && Math.floor(time * 20) % 2 === 0) alpha = 0.6;
+  ctx.globalAlpha = alpha;
+  FL = ghost ? '#ffd76a' : (h.flash > 0 ? '#ffb0a0' : null);
+  const ps = ghost ? null : heroSwordPose(h);
+  const swordOn = !ghost && !h.dead && h.crouch < 0.95;
+  if (swordOn && back) drawSwordArm(sx, sy, ps);
+
+  const dashing = !ghost && h.dashT > 0;
+  const flap = Math.sin(t * (dashing ? 22 : m > 0.25 ? 6.5 : 3.4)) * (dashing ? 4 : m > 0.25 ? 2.4 : 1.3);
+  const sweep = m * 4 * face;
   ctx.save();
   ctx.translate(sx, sy - z);
-  if (h.haloA > 0) drawHalo(-42 + lo, h.haloA);
-  const flap = Math.sin(t * (h.dashT > 0 ? 22 : 3.6)) * (h.dashT > 0 ? 3 : 1.3);
-  drawWing(-1, h.wingSpread, flap, lo);
-  drawWing(1, h.wingSpread, flap, lo);
-  ctx.scale(h.face, 1);
-  const O = HC.O;
-  // pelerin
-  P(-7, -23 + lo, 14, 22 - lo, O); P(-6, -22 + lo, 12, 20 - lo, HC.whS); P(-6, -22 + lo, 4, 20 - lo, HC.wh);
-  for (let k = 0; k < 6; k++) P(-6 + k * 2, -2 + ((k + Math.floor(t * 4)) % 2), 1, 1, HC.ruD);
-  // bacaklar
-  const legH = 12 - lo;
-  P(-5, -legH, 4, legH, O); P(-4, -legH, 2, legH - 1, HC.y); P(-4, -legH, 1, legH - 1, HC.Y);
-  P(1, -legH, 4, legH, O); P(2, -legH, 2, legH - 1, HC.y); P(3, -legH, 1, legH - 1, HC.o);
-  if (legH > 6) { P(-4, -legH + 3, 2, 2, HC.ru); P(2, -legH + 3, 2, 2, HC.ru); }
-  P(-5, -2, 4, 2, HC.o); P(1, -2, 4, 2, HC.o);
-  const u = lo; // üst gövde kaydırma
-  // tabard
-  P(-2, -17 + u, 4, 11, O); P(-1, -17 + u, 2, 10, HC.ru); P(-1, -9 + u, 2, 2, HC.ruD);
-  // tasset
-  P(-7, -18 + u, 5, 6, O); P(-6, -17 + u, 3, 4, HC.y); P(-6, -17 + u, 3, 1, HC.Y);
-  P(2, -18 + u, 5, 6, O); P(3, -17 + u, 3, 4, HC.y); P(3, -17 + u, 3, 1, HC.Y);
-  // kemer
-  P(-6, -19 + u, 12, 2, HC.d); P(-1, -19 + u, 2, 2, HC.ruL);
-  // gövde
-  P(-6, -27 + u, 12, 9, O); P(-5, -26 + u, 10, 7, HC.y); P(-4, -26 + u, 3, 6, HC.Y); P(2, -25 + u, 3, 6, HC.o);
-  P(-1, -24 + u, 2, 3, HC.ru); P(-1, -24 + u, 1, 1, HC.ruL);
-  P(-4, -26 + u, 3, 1, HC.wh); P(1, -26 + u, 3, 1, HC.wh);
-  // kollar
-  P(-10, -21 + u, 4, 9, O); P(-9, -21 + u, 2, 7, HC.y); P(-10, -14 + u, 4, 3, HC.o);
-  P(6, -21 + u, 4, 9, O); P(7, -21 + u, 2, 7, HC.y); P(6, -14 + u, 4, 3, HC.o);
-  // omuzluklar
-  P(-12, -29 + u, 7, 8, O); P(-11, -28 + u, 5, 6, HC.Y); P(-11, -28 + u, 5, 1, HC.HL); P(-11, -23 + u, 5, 1, HC.o); P(-9, -26 + u, 2, 2, HC.ru);
-  P(5, -29 + u, 7, 8, O); P(6, -28 + u, 5, 6, HC.y); P(6, -28 + u, 5, 1, HC.Y); P(6, -23 + u, 5, 1, HC.o); P(8, -26 + u, 2, 2, HC.ru);
-  // boyun & baş
-  P(-1, -29 + u, 2, 2, HC.skS);
-  P(-4, -36 + u, 8, 8, O); P(-3, -35 + u, 6, 6, HC.sk); P(-3, -30 + u, 6, 1, HC.skS);
-  P(-2, -33 + u, 1, 1, '#3a2a20'); P(1, -33 + u, 1, 1, '#3a2a20');
-  P(2, -35 + u, 1, 5, HC.skS);
-  // saç
-  const wv = Math.round(Math.sin(t * 3) * 1);
-  P(-5, -38 + u, 10, 3, O); P(-4, -38 + u, 8, 3, HC.ha); P(-3, -38 + u, 4, 1, '#fff0b0');
-  P(-6, -36 + u, 3, 9, O); P(-5, -36 + u, 2, 8, HC.ha); P(-5, -31 + u, 2, 3, HC.haS);
-  P(3, -36 + u, 3, 9, O); P(4, -36 + u, 1, 8, HC.ha); P(4, -31 + u, 2, 3, HC.haS);
-  P(-8 + wv, -33 + u, 2, 6, HC.haS); P(6 - wv, -33 + u, 2, 6, HC.haD);
+  if (!back) {
+    if (!ghost && h.haloA > 0) drawHalo(-59 + u, h.haloA);
+    drawWing(-1, h.wingSpread, flap, u, sweep);
+    drawWing(1, h.wingSpread, flap, u, sweep);
+    ctx.scale(face, 1);
+    drawBodyFront(m, t, u, lean, h.crouch, !ghost && h.castT > 0);
+  } else {
+    ctx.scale(face, 1);
+    drawBodyBack(m, t, u, lean, h.crouch);
+    ctx.scale(face, 1);
+    drawWing(-1, h.wingSpread, flap, u, sweep);
+    drawWing(1, h.wingSpread, flap, u, sweep);
+    if (!ghost && h.haloA > 0) drawHalo(-59 + u, h.haloA);
+  }
   ctx.restore();
 
-  // kılıç
-  const hand = { x: sx + h.face * 8, y: sy - z - 13 + lo };
-  let ang;
-  if (h.atkT > 0) {
-    const p = easeOut(1 - h.atkT / h.atkDur);
-    ang = lerp(h.swingA0, h.swingA1, p);
-    hand.x = sx + Math.cos(ang) * 5; hand.y = sy - z - 16 + Math.sin(ang) * 3;
-    // kılıç izi
-    const r = 24, cx = sx, cy = sy - z - 16;
-    const a0 = h.swingA0, a1 = ang;
-    const alpha = 0.85 * (1 - p * 0.6);
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.lineWidth = 5; ctx.strokeStyle = `rgba(255,170,60,${alpha * 0.55})`;
-    ctx.beginPath(); ctx.arc(cx, cy, r, Math.min(a0, a1), Math.max(a0, a1)); ctx.stroke();
-    ctx.lineWidth = 2; ctx.strokeStyle = `rgba(255,245,210,${alpha})`;
-    ctx.beginPath(); ctx.arc(cx, cy, r + 1, Math.min(a0, a1), Math.max(a0, a1)); ctx.stroke();
-    ctx.restore();
-  } else {
-    ang = Math.PI / 2 - h.face * (0.35 + Math.sin(t * 2.6) * 0.04);
-  }
-  if (!h.dead && h.crouch < 0.95) drawSword(swordSpr, Math.round(hand.x), Math.round(hand.y), ang, 5, 3);
-  // büyü eli: omuzdan ateşin çıktığı noktaya uzanan zırhlı kol
-  if (h.castT > 0 && !h.dead) {
-    const shx = sx - h.face * 7, shy = sy - z - 22;
+  if (swordOn && !back) drawSwordArm(sx, sy, ps);
+  // büyü eli: omuzdan ateşin çıktığı noktaya uzanan kol
+  if (!ghost && h.castT > 0 && !h.dead) {
+    const shx = sx - face * 7 + lean * face, shy = sy - z - 38 + u;
     const tx = sx + Math.round((h.castX - h.castY) * 16), ty = sy + Math.round((h.castX + h.castY) * 8) - Math.round(h.castZ);
-    const steps = Math.max(1, Math.round(Math.hypot(tx - shx, ty - shy)));
-    for (let i = 0; i <= steps; i++) { const f = i / steps; P(Math.round(lerp(shx, tx, f)) - 2, Math.round(lerp(shy, ty, f)) - 2, 4, 4, HC.O); }
-    for (let i = 0; i <= steps; i++) { const f = i / steps; P(Math.round(lerp(shx, tx, f)) - 1, Math.round(lerp(shy, ty, f)) - 1, 2, 2, f > 0.75 ? HC.o : HC.y); }
+    seg(shx, shy, tx, ty, 4, HC.y, HC.O);
     const pulse = h.castT / 0.3;
     ctx.save(); ctx.globalCompositeOperation = 'lighter';
     const gr = Math.round(3 + pulse * 4);
@@ -1935,8 +2123,8 @@ function render() {
   }
 
   // kahraman ışığı
-  if (hero.visible) light(hs.x, hs.y - 26, 78 + Math.sin(time * 2) * 3, 0.95, 'rgba(255,210,120,');
-  if (hero.visible && hero.haloA > 0) light(hs.x, hs.y - 45, 26, 0.4 * hero.haloA, 'rgba(255,230,150,');
+  if (hero.visible) light(hs.x, hs.y - 34, 82 + Math.sin(time * 2) * 3, 0.95, 'rgba(255,210,120,');
+  if (hero.visible && hero.haloA > 0) light(hs.x, hs.y - 62, 28, 0.4 * hero.haloA, 'rgba(255,230,150,');
 
   // aydınlatma katmanı
   lctx.globalCompositeOperation = 'source-over';
@@ -2039,11 +2227,18 @@ function drawHUD() {
 // ---------------------------------------------------------
 // Kamera
 // ---------------------------------------------------------
+const camLead = { x: 0, y: 0 };
 function updateCamera(dt, snap = false) {
-  const tx = isoX(hero.x, hero.y) - VW / 2;
-  const ty = isoY(hero.x, hero.y) - VH / 2 - 18;
+  let lx = hero.vx * 0.25, ly = hero.vy * 0.25;
+  if (!isTouch && mouse.seen && state === 'play') { lx += (mouse.x - VW / 2) * 0.12; ly += (mouse.y - VH / 2) * 0.12; }
+  lx = clamp(lx, -42, 42); ly = clamp(ly, -30, 30);
+  if (snap) { camLead.x = lx; camLead.y = ly; }
+  const kl = Math.min(1, dt * 3);
+  camLead.x += (lx - camLead.x) * kl; camLead.y += (ly - camLead.y) * kl;
+  const tx = isoX(hero.x, hero.y) - VW / 2 + camLead.x;
+  const ty = isoY(hero.x, hero.y) - VH / 2 - 26 + camLead.y;
   if (snap) { cam.x = tx; cam.y = ty; return; }
-  const k = 1 - Math.pow(0.002, dt);
+  const k = 1 - Math.pow(0.0004, dt);
   cam.x += (tx - cam.x) * k; cam.y += (ty - cam.y) * k;
 }
 
@@ -2388,5 +2583,5 @@ addEventListener('visibilitychange', () => { if (document.hidden && state === 'p
 requestAnimationFrame(frame);
 
 // hata ayıklama için
-window.__game = { hero, enemies: () => enemies, state: () => state, skipIntro, get boss() { return boss; } };
+window.__game = { ts: (x, y) => ({ x: sX(x, y) * SCALE / DPR, y: (sY(x, y) - 20) * SCALE / DPR }), hs: () => { const s = heroScreen(); return { x: s.x * SCALE / DPR, y: s.y * SCALE / DPR, k: SCALE / DPR }; }, hero, enemies: () => enemies, state: () => state, skipIntro, get boss() { return boss; } };
 })();
